@@ -53,6 +53,7 @@ class Inspector extends Component {
       "button": this.renderButton,
       "path": this.renderPath,
       "text": this.renderText,
+      "multitext": this.renderMultiPath,
       "image": this.renderImage,
       "multipath": this.renderMultiPath,
       "multiclip": this.renderMultiClip,
@@ -69,7 +70,7 @@ class Inspector extends Component {
      * Which actions should be shown for which selection types.
      */
     this.actionRules = {
-      'breakApart': ["clip", "button",],
+      'breakApart': ["clip", "button", "text", "multitext"],
       'convertSelectionToButton': ["path", "text", "image", "multipath", "multiclip", "multicanvas"],
       'convertSelectionToClip': ["path", "text", "image", "multipath", "multiclip", "multicanvas"],
       'editTimeline': ["clip", "button"],
@@ -88,6 +89,7 @@ class Inspector extends Component {
       "button": "Button",
       "path": "Path",
       "text": "Text",
+      "multitext": "Text",
       "image": "Image",
       "multipath": "Multi-Path",
       "multiclip": "Multi-Clip",

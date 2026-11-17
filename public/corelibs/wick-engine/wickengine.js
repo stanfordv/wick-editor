@@ -1,5 +1,5 @@
 /*Wick Engine https://github.com/Wicklets/wick-engine*/
-var WICK_ENGINE_BUILD_VERSION = "2021.1.18.12.6.20";
+var WICK_ENGINE_BUILD_VERSION = "2026.11.17.22.28.37";
 /*!
  * Paper.js v0.12.4 - The Swiss Army Knife of Vector Graphics Scripting.
  * http://paperjs.org/
@@ -51159,18 +51159,44 @@ Wick.Project = class extends Wick.Base {
     this.selection.select(clip);
   }
   /**
-   * Breaks selected clips into their children clips and paths.
+   * Breaks the selection apart.
+   * Clips and buttons release their children onto the current frame.
+   * A text field with more than one character splits into one text field per character.
+   * A single character becomes filled vector outlines.
+   * @returns {Promise} Resolves after every selected object has been broken apart.
    */
 
 
   breakApartSelection() {
     var leftovers = [];
+    var jobs = [];
     var clips = this.selection.getSelectedObjects('Clip');
+    var texts = this.selection.getSelectedObjects('Path').filter(path => {
+      return path.pathType === 'text';
+    });
     this.selection.clear();
     clips.forEach(clip => {
       leftovers = leftovers.concat(clip.breakApart());
     });
-    this.selection.selectMultipleObjects(leftovers);
+    texts.forEach(text => {
+      jobs.push(new Promise(resolve => {
+        text.breakApartText(paths => {
+          leftovers = leftovers.concat(paths);
+          resolve();
+        });
+      }));
+    });
+
+    var finish = () => {
+      this.selection.selectMultipleObjects(leftovers);
+    };
+
+    if (jobs.length === 0) {
+      finish();
+      return Promise.resolve();
+    }
+
+    return Promise.all(jobs).then(finish);
   }
   /**
    * Sets the project focus to the timeline of the selected clip.
@@ -52312,7 +52338,9 @@ Wick.Selection = class extends Wick.Base {
         }
       } else if (selection.types.length === 1) {
         if (selection.types[0] === 'Path') {
-          return 'multipath';
+          var selectedPaths = selection.getSelectedObjects();
+          var allText = selectedPaths.every(object => object.pathType === 'text');
+          return allText ? 'multitext' : 'multipath';
         } else {
           return 'multiclip';
         }
@@ -54349,6 +54377,209 @@ Wick.Path = class extends Wick.Base {
     });
     flatPath.fillColor = this.strokeColor;
     return flatPath;
+  }
+  /**
+   * Break this text apart the way Animate does.
+   * Several characters become one text path each. One character becomes vector outlines.
+   * @param {Function} callback - Called with the Wick.Path objects that replaced this text.
+   */
+
+
+  breakApartText(callback) {
+    if (this.pathType !== 'text') {
+      callback([]);
+      return;
+    }
+
+    var glyphs = Array.from((this.textContent || '').replace(/\s/g, ''));
+
+    if (glyphs.length === 0) {
+      callback([]);
+      return;
+    }
+
+    if (glyphs.length === 1) {
+      this._breakTextIntoVectors(callback);
+    } else {
+      callback(this._breakTextIntoCharacters());
+    }
+  }
+  /**
+   * Replace this text path with one text path per visible character.
+   * @returns {Wick.Path[]}
+   */
+
+
+  _breakTextIntoCharacters() {
+    this.view.paper;
+    var item = this.view.item;
+    var frame = this.parentFrame;
+    var created = [];
+    var lines = (item.content || '').split(/\r?\n/);
+    var fontSize = item.fontSize || 24;
+    var leading = item.leading || fontSize * 1.2;
+    var scaling = item.scaling || new paper.Point(1, 1);
+    var rotation = item.rotation || 0;
+    var measure = document.createElement('canvas').getContext('2d');
+    var sizePart = /[a-z]/i.test(String(fontSize)) ? ' ' : 'px ';
+    measure.font = (item.fontWeight || 'normal') + ' ' + fontSize + sizePart + (item.fontFamily || 'sans-serif');
+
+    var widthOf = str => {
+      if (!str) return 0;
+      return measure.measureText(str).width;
+    };
+
+    var placeAnchor = (x, y) => {
+      var delta = new paper.Point(x * scaling.x, y * scaling.y);
+      delta = delta.rotate(rotation);
+      return item.point.add(delta);
+    };
+
+    lines.forEach((line, lineIndex) => {
+      var chars = Array.from(line);
+      var lineWidth = widthOf(chars.join(''));
+      var justification = item.justification || 'left';
+      var originX = 0;
+      if (justification === 'center') originX = -lineWidth / 2;else if (justification === 'right') originX = -lineWidth;
+      chars.forEach((ch, index) => {
+        if (!ch.trim()) return;
+        var anchor = placeAnchor(originX + widthOf(chars.slice(0, index).join('')), lineIndex * leading);
+        var letter = new paper.PointText({
+          insert: false
+        });
+        letter.content = ch;
+        letter.fontFamily = item.fontFamily;
+        letter.fontSize = item.fontSize;
+        letter.fontWeight = item.fontWeight;
+        letter.leading = item.leading;
+        letter.fillColor = item.fillColor ? item.fillColor.clone() : new paper.Color('#000000');
+        letter.justification = 'left';
+        letter.opacity = item.opacity;
+
+        if (item.strokeColor) {
+          letter.strokeColor = item.strokeColor.clone();
+          letter.strokeWidth = item.strokeWidth;
+        }
+
+        letter.point = anchor;
+        if (rotation) letter.rotate(rotation, letter.point);
+
+        if (scaling.x !== 1 || scaling.y !== 1) {
+          letter.scale(scaling.x, scaling.y, letter.point);
+        }
+
+        var wickPath = new Wick.Path({
+          project: this.project,
+          json: letter.exportJSON({
+            asString: false
+          })
+        });
+        wickPath._fontWeight = this._fontWeight;
+        wickPath._fontStyle = this._fontStyle;
+        wickPath.needReimport = true;
+        wickPath.view.render();
+        frame.addPath(wickPath);
+        created.push(wickPath);
+      });
+    });
+    this.remove();
+    return created;
+  }
+  /**
+   * Replace this single-character text path with filled vector outlines of the glyph.
+   * @param {Function} callback - Called with the new path, or an empty list if tracing fails.
+   */
+
+
+  _breakTextIntoVectors(callback) {
+    this.view.paper;
+    var item = this.view.item;
+    var bounds = item.bounds;
+
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+      callback([]);
+      return;
+    } // paper.Item.rasterize() divides the resolution argument by 72.
+    // Pass view.resolution * quality so the bitmap is `quality` pixels per project unit.
+
+
+    var quality = 4;
+    var longest = Math.max(bounds.width, bounds.height);
+
+    if (longest * quality > 1600) {
+      quality = Math.max(2, 1600 / longest);
+    }
+
+    var pixelRatio = window.devicePixelRatio || 1;
+    var rasterResolution = (paper.view.resolution || 72) * quality / pixelRatio;
+    var fill = item.fillColor;
+    var color = fill && fill.alpha > 0 ? fill.clone() : item.strokeColor ? item.strokeColor.clone() : new paper.Color('#000000');
+    var opacity = item.opacity;
+    var position = item.position.clone();
+    var frame = this.parentFrame;
+    var project = this.project;
+    var raster = item.rasterize(rasterResolution, false);
+    var url = raster.toDataURL();
+    raster.remove();
+
+    if (!url || url === 'data:,') {
+      callback([]);
+      return;
+    }
+
+    var source = this;
+    var img = new Image();
+
+    img.onload = () => {
+      try {
+        var svg = potrace.fromImage(img).toSVG(1 / quality);
+        var imported = paper.project.importSVG(svg, {
+          insert: false
+        });
+
+        if (!imported) {
+          callback([]);
+          return;
+        }
+
+        var shape = imported;
+
+        if (imported.children && imported.children.length === 1) {
+          shape = imported.children[0];
+          shape.transform(imported.matrix);
+          shape.remove();
+        } else {
+          imported.remove();
+        }
+
+        shape.fillColor = color;
+        shape.fillRule = 'evenodd';
+        shape.strokeColor = null;
+        shape.opacity = opacity;
+        shape.position = position;
+        shape.applyMatrix = true;
+
+        if (!shape.bounds || shape.bounds.height < 1 || shape.bounds.width < 1) {
+          callback([]);
+          return;
+        }
+
+        var wickPath = new Wick.Path({
+          project: project,
+          path: shape
+        });
+        source.remove();
+        frame.addPath(wickPath);
+        callback([wickPath]);
+      } catch (error) {
+        console.error('Could not convert text to vectors.', error);
+        callback([]);
+      }
+    };
+
+    img.onerror = () => callback([]);
+
+    img.src = url;
   }
   /**
    * Is this path used as a placeholder for preventing empty clips?

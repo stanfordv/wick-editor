@@ -333,7 +333,9 @@ Wick.Selection = class extends Wick.Base {
                 }
             } else if (selection.types.length === 1) {
                 if (selection.types[0] === 'Path') {
-                    return 'multipath';
+                    var selectedPaths = selection.getSelectedObjects();
+                    var allText = selectedPaths.every(object => object.pathType === 'text');
+                    return allText ? 'multitext' : 'multipath';
                 } else {
                     return 'multiclip';
                 }

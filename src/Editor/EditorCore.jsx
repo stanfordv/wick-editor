@@ -530,17 +530,20 @@ class EditorCore extends Component {
   }
 
   /**
-   * Break apart the selected clip(s) and select the objects that were contained within those clip(s).
+   * Break apart the selection.
+   * Clips and buttons release their contents. Text splits into characters, then into vectors.
    */
   breakApartSelection = () => {
-    //only break apart selections that have at least 1 clip or button
-    //it might be better for these checks to go wherever project.breakApartSelection is defined
-    var sel = this.project.selection;
-    if (sel.numObjects === 0 || (!sel.types.includes("Clip") && !sel.types.includes("Button"))) {
-      return;
-    }
-    this.project.breakApartSelection();
-    this.projectDidChange({ actionName: "Break Apart Selection"});
+    var objects = this.project.selection.getSelectedObjects();
+    var canBreak = objects.some(obj => {
+      return (obj instanceof window.Wick.Clip)
+        || (obj instanceof window.Wick.Path && obj.pathType === 'text');
+    });
+    if (!canBreak) return;
+
+    this.project.breakApartSelection().then(() => {
+      this.projectDidChange({ actionName: "Break Apart Selection" });
+    });
   }
 
   /**

@@ -1200,11 +1200,19 @@ Wick.Project = class extends Wick.Base {
     }
 
     /**
-     * Breaks selected clips into their children clips and paths.
+     * Breaks the selection apart.
+     * Clips and buttons release their children onto the current frame.
+     * A text field with more than one character splits into one text field per character.
+     * A single character becomes filled vector outlines.
+     * @returns {Promise} Resolves after every selected object has been broken apart.
      */
     breakApartSelection() {
         var leftovers = [];
+        var jobs = [];
         var clips = this.selection.getSelectedObjects('Clip');
+        var texts = this.selection.getSelectedObjects('Path').filter(path => {
+            return path.pathType === 'text';
+        });
 
         this.selection.clear();
 
@@ -1212,7 +1220,25 @@ Wick.Project = class extends Wick.Base {
             leftovers = leftovers.concat(clip.breakApart());
         });
 
-        this.selection.selectMultipleObjects(leftovers);
+        texts.forEach(text => {
+            jobs.push(new Promise(resolve => {
+                text.breakApartText(paths => {
+                    leftovers = leftovers.concat(paths);
+                    resolve();
+                });
+            }));
+        });
+
+        var finish = () => {
+            this.selection.selectMultipleObjects(leftovers);
+        };
+
+        if (jobs.length === 0) {
+            finish();
+            return Promise.resolve();
+        }
+
+        return Promise.all(jobs).then(finish);
     }
 
     /**
