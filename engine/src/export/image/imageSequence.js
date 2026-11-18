@@ -57,4 +57,23 @@ Wick.ImageSequence = class {
             onProgress: onProgress,
         });
     }
+
+    /**
+     * Create one PNG of the current frame, cropped to the artwork.
+     * @param {Wick.Project} args.project
+     * @param {function} args.onFinish - called with a PNG Blob
+     */
+    static toContentPNG (args) {
+        let { project, onFinish } = args;
+
+        project.generateImageSequence({
+            frame: 'current',
+            fitToElements: true,
+            onFinish: (images) => {
+                var src = images[0] && images[0].src;
+                onFinish(src ? Wick.ExportUtils.dataURItoBlob(src) : null);
+            },
+            onProgress: () => {},
+        });
+    }
 }

@@ -1142,6 +1142,51 @@ class EditorCore extends Component {
   }
 
   /**
+   * Export the current frame as one PNG cropped to the artwork.
+   */
+  exportProjectAsContentPNG = (args) => {
+    this.openModal('ExportMedia');
+    this.setState({
+      renderProgress: 10,
+      renderType: "png",
+      renderStatusMessage: "Creating PNG.",
+      exporting: true,
+    });
+
+    let toastID = this.toast('Exporting PNG...', 'info');
+    let outputName = (args && args.name) || this.project.name;
+
+    window.Wick.ImageSequence.toContentPNG({
+      project: this.project,
+      onFinish: (pngBlob) => {
+        let success = () => {
+          this.updateToast(toastID, {
+            type: 'success',
+            text: "Successfully saved .png file." });
+        }
+
+        let fail = () => {
+          this.updateToast(toastID, {
+            type: 'error',
+            text: "Error saving .png file. Please try again." });
+        }
+
+        if (pngBlob) {
+          window.saveFileFromWick(pngBlob, outputName, '.png', success, fail);
+        } else {
+          fail();
+        }
+
+        this.setState({
+          renderStatusMessage: 'Finished creating PNG.',
+          renderProgress: 100,
+          exporting: false,
+        });
+      },
+    });
+  }
+
+  /**
    * Export the current project as a video.
    */
   exportProjectAsVideo = (args) => {

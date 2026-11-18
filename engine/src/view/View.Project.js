@@ -366,9 +366,11 @@ Wick.View.Project = class extends Wick.View {
         this.paper.project.addLayer(this._svgBackgroundLayer);
 
         if (this.model.focus.isRoot) {
-            // We're in the root timeline, render the canvas normally
-            var stage = this._generateSVGCanvasStage();
-            this._svgBackgroundLayer.addChild(stage);
+            // Skip the stage fill while exporting so the PNG can crop to the artwork.
+            if (!this.model.hideStageForExport) {
+                var stage = this._generateSVGCanvasStage();
+                this._svgBackgroundLayer.addChild(stage);
+            }
         } else {
             // We're inside a clip, don't render the canvas BG, instead render a crosshair at (0,0)
             var originCrosshair = this._generateSVGOriginCrosshair();

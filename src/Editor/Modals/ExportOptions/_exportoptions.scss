@@ -106,6 +106,18 @@ $info-left-margin: 12px;
   margin-top: 10px;
 }
 
+.export-fit-png {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.export-fit-png p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: $editor-modal-text-gray;
+}
+
 .export-object-info {
   height: 120px; 
 }

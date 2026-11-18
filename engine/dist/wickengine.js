@@ -1,5 +1,5 @@
 /*Wick Engine https://github.com/Wicklets/wick-engine*/
-var WICK_ENGINE_BUILD_VERSION = "2026.11.17.22.28.37";
+var WICK_ENGINE_BUILD_VERSION = "2026.11.17.23.7.41";
 /*!
  * Paper.js v0.12.4 - The Swiss Army Knife of Vector Graphics Scripting.
  * http://paperjs.org/
@@ -48810,6 +48810,28 @@ Wick.ImageSequence = class {
       onProgress: onProgress
     });
   }
+  /**
+   * Create one PNG of the current frame, cropped to the artwork.
+   * @param {Wick.Project} args.project
+   * @param {function} args.onFinish - called with a PNG Blob
+   */
+
+
+  static toContentPNG(args) {
+    let {
+      project,
+      onFinish
+    } = args;
+    project.generateImageSequence({
+      frame: 'current',
+      fitToElements: true,
+      onFinish: images => {
+        var src = images[0] && images[0].src;
+        onFinish(src ? Wick.ExportUtils.dataURItoBlob(src) : null);
+      },
+      onProgress: () => {}
+    });
+  }
 
 };
 /*
@@ -51760,9 +51782,134 @@ Wick.Project = class extends Wick.Base {
     return true;
   }
   /**
+   * Bounds of the rendered artwork, in project coordinates.
+   * @returns {paper.Rectangle|null}
+   */
+
+
+  _contentBounds() {
+    var bounds = null;
+    var layers = this.view && this.view.paper && this.view.paper.project ? this.view.paper.project.layers : [];
+    layers.forEach(layer => {
+      var type = layer.data && layer.data.wickType;
+      if (type !== 'clipsandpaths' && type !== 'paths') return;
+      layer.children.forEach(child => {
+        if (child.data && child.data.wickType === 'gui') return;
+        var childBounds = child.strokeBounds || child.bounds;
+        if (!childBounds) return;
+        if (!(childBounds.width > 0 || childBounds.height > 0)) return;
+        bounds = bounds ? bounds.unite(childBounds) : childBounds.clone();
+      });
+    });
+    return bounds;
+  }
+  /**
+   * Size the export canvas to the artwork and point the view at all of it.
+   * Very large artwork is scaled down so the browser can hold the whole image.
+   * @param {paper.Rectangle} bounds
+   */
+
+
+  _frameCanvasToBounds(bounds) {
+    var pixelRatio = window.devicePixelRatio || 1;
+    var maxDimension = 8192;
+    var pad = 2;
+    var width = Math.max(1, bounds.width + pad * 2);
+    var height = Math.max(1, bounds.height + pad * 2);
+    var centerX = bounds.center.x;
+    var centerY = bounds.center.y;
+    var scale = Math.min(1, maxDimension / width, maxDimension / height);
+    var outW = Math.max(1, Math.round(width * scale));
+    var outH = Math.max(1, Math.round(height * scale));
+    var container = this.view.canvasContainer;
+
+    var applySize = (pixelW, pixelH) => {
+      container.style.width = pixelW / pixelRatio + 'px';
+      container.style.height = pixelH / pixelRatio + 'px';
+      this.view.resize();
+    };
+
+    applySize(outW, outH);
+    var canvas = this.view.canvas;
+
+    if (canvas.width > 0 && canvas.height > 0 && (canvas.width + 2 < outW || canvas.height + 2 < outH)) {
+      applySize(canvas.width, canvas.height);
+    }
+
+    var cssW = this.view.paper.view.viewSize.width;
+    var cssH = this.view.paper.view.viewSize.height; // Bypass the zoom setter. It clamps to 0.1 and crops artwork that is larger than the stage.
+
+    this._zoom = Math.min(cssW / width, cssH / height);
+    this.pan = {
+      x: this.width / 2 - centerX,
+      y: this.height / 2 - centerY
+    };
+  }
+  /**
+   * Crop a canvas to the pixels that were actually painted.
+   * @param {HTMLCanvasElement} canvas
+   * @returns {HTMLCanvasElement}
+   */
+
+
+  _trimCanvasToOpaque(canvas) {
+    var context = canvas.getContext('2d');
+    var width = canvas.width;
+    var height = canvas.height;
+    var pixels;
+
+    try {
+      pixels = context.getImageData(0, 0, width, height).data;
+    } catch (e) {
+      return canvas;
+    }
+
+    var minX = width;
+    var minY = height;
+    var maxX = -1;
+    var maxY = -1;
+
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        if (pixels[(y * width + x) * 4 + 3] === 0) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (maxX < 0) return canvas;
+    var cropWidth = maxX - minX + 1;
+    var cropHeight = maxY - minY + 1;
+    var cropped = window.document.createElement('canvas');
+    cropped.width = cropWidth;
+    cropped.height = cropHeight;
+    cropped.getContext('2d').drawImage(canvas, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    return cropped;
+  }
+  /**
+   * Paint the project background behind transparent pixels.
+   * @param {HTMLCanvasElement} canvas
+   * @returns {HTMLCanvasElement}
+   */
+
+
+  _fillCanvasBackground(canvas) {
+    var context = canvas.getContext('2d');
+    var color = this.backgroundColor && (this.backgroundColor.rgba || this.backgroundColor.hex);
+    context.globalCompositeOperation = 'destination-over';
+    context.fillStyle = color || '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.globalCompositeOperation = 'source-over';
+    return canvas;
+  }
+  /**
    * Create a sequence of images from every frame in the project.
    * @param {object} args - Options for generating the image sequence
    * @param {string} imageType - MIMEtype to use for rendered images. Defaults to 'image/png'.
+   * @param {string} frame - Pass 'current' to render only the current root frame.
+   * @param {boolean} fitToElements - Crop each image to the artwork on that frame.
    * @param {function} onProgress - Function to call for each image loaded, useful for progress bars
    * @param {function} onFinish - Function to call when the images are all loaded.
    */
@@ -51776,8 +51923,8 @@ Wick.Project = class extends Wick.Base {
     if (!args.width) args.width = this.width;
     if (!args.height) args.height = this.height;
     var renderCopy = this;
-    renderCopy.renderBlackBars = true; // Turn off black bars (removes black lines)
-
+    renderCopy.renderBlackBars = !args.fitToElements;
+    renderCopy.hideStageForExport = !!args.fitToElements;
     var oldCanvasContainer = this.view.canvasContainer;
     this.history.saveSnapshot('before-gif-render');
     this.mute();
@@ -51802,7 +51949,13 @@ Wick.Project = class extends Wick.Base {
 
 
     renderCopy.focus = renderCopy.root;
-    renderCopy.focus.timeline.playheadPosition = 1;
+
+    if (args.frame === 'current') {
+      renderCopy.focus.timeline.playheadPosition = renderCopy.focus.timeline.playheadPosition || 1;
+    } else {
+      renderCopy.focus.timeline.playheadPosition = 1;
+    }
+
     renderCopy.onionSkinEnabled = false;
     renderCopy.zoom = zoom / window.devicePixelRatio;
     renderCopy.pan = {
@@ -51813,8 +51966,9 @@ Wick.Project = class extends Wick.Base {
     // (See paper.js docs for info about autoUpdate)
 
     renderCopy.view.paper.view.autoUpdate = false;
+    var framedToArtwork = false;
     var frameImages = [];
-    var numMaxFrameImages = renderCopy.focus.timeline.length;
+    var numMaxFrameImages = args.frame === 'current' ? renderCopy.focus.timeline.playheadPosition : renderCopy.focus.timeline.length;
 
     var renderFrame = () => {
       var frameImage = new Image();
@@ -51829,6 +51983,7 @@ Wick.Project = class extends Wick.Base {
           renderCopy.view.paper.view.autoUpdate = true;
           this.view.canvasContainer = oldCanvasContainer;
           this.view.resize();
+          this.hideStageForExport = false;
           this.history.loadSnapshot('before-gif-render');
           this.publishedMode = false;
           this.view.render();
@@ -51844,7 +51999,28 @@ Wick.Project = class extends Wick.Base {
 
       renderCopy.view.render();
       renderCopy.view.paper.view.update();
-      frameImage.src = renderCopy.view.canvas.toDataURL(args.imageType);
+
+      if (args.fitToElements && !framedToArtwork) {
+        var artworkBounds = renderCopy._contentBounds();
+
+        if (artworkBounds) {
+          framedToArtwork = true;
+
+          renderCopy._frameCanvasToBounds(artworkBounds);
+
+          renderCopy.view.render();
+          renderCopy.view.paper.view.update();
+        }
+      }
+
+      var exportCanvas = renderCopy.view.canvas;
+
+      if (args.fitToElements) {
+        exportCanvas = renderCopy._trimCanvasToOpaque(exportCanvas);
+        exportCanvas = renderCopy._fillCanvasBackground(exportCanvas);
+      }
+
+      frameImage.src = exportCanvas.toDataURL(args.imageType);
     };
 
     this.resetSoundsPlayed();
@@ -63340,10 +63516,12 @@ Wick.View.Project = class extends Wick.View {
     this.paper.project.addLayer(this._svgBackgroundLayer);
 
     if (this.model.focus.isRoot) {
-      // We're in the root timeline, render the canvas normally
-      var stage = this._generateSVGCanvasStage();
+      // Skip the stage fill while exporting so the PNG can crop to the artwork.
+      if (!this.model.hideStageForExport) {
+        var stage = this._generateSVGCanvasStage();
 
-      this._svgBackgroundLayer.addChild(stage);
+        this._svgBackgroundLayer.addChild(stage);
+      }
     } else {
       // We're inside a clip, don't render the canvas BG, instead render a crosshair at (0,0)
       var originCrosshair = this._generateSVGOriginCrosshair();

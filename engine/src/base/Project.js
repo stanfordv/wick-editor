@@ -1789,9 +1789,135 @@ Wick.Project = class extends Wick.Base {
 
 
     /**
+     * Bounds of the rendered artwork, in project coordinates.
+     * @returns {paper.Rectangle|null}
+     */
+    _contentBounds () {
+        var bounds = null;
+        var layers = this.view && this.view.paper && this.view.paper.project
+            ? this.view.paper.project.layers
+            : [];
+
+        layers.forEach(layer => {
+            var type = layer.data && layer.data.wickType;
+            if (type !== 'clipsandpaths' && type !== 'paths') return;
+
+            layer.children.forEach(child => {
+                if (child.data && child.data.wickType === 'gui') return;
+                var childBounds = child.strokeBounds || child.bounds;
+                if (!childBounds) return;
+                if (!(childBounds.width > 0 || childBounds.height > 0)) return;
+                bounds = bounds ? bounds.unite(childBounds) : childBounds.clone();
+            });
+        });
+
+        return bounds;
+    }
+
+    /**
+     * Size the export canvas to the artwork and point the view at all of it.
+     * Very large artwork is scaled down so the browser can hold the whole image.
+     * @param {paper.Rectangle} bounds
+     */
+    _frameCanvasToBounds (bounds) {
+        var pixelRatio = window.devicePixelRatio || 1;
+        var maxDimension = 8192;
+        var pad = 2;
+        var width = Math.max(1, bounds.width + pad * 2);
+        var height = Math.max(1, bounds.height + pad * 2);
+        var centerX = bounds.center.x;
+        var centerY = bounds.center.y;
+        var scale = Math.min(1, maxDimension / width, maxDimension / height);
+        var outW = Math.max(1, Math.round(width * scale));
+        var outH = Math.max(1, Math.round(height * scale));
+        var container = this.view.canvasContainer;
+
+        var applySize = (pixelW, pixelH) => {
+            container.style.width = (pixelW / pixelRatio) + 'px';
+            container.style.height = (pixelH / pixelRatio) + 'px';
+            this.view.resize();
+        };
+
+        applySize(outW, outH);
+
+        var canvas = this.view.canvas;
+        if (canvas.width > 0 && canvas.height > 0 && (canvas.width + 2 < outW || canvas.height + 2 < outH)) {
+            applySize(canvas.width, canvas.height);
+        }
+
+        var cssW = this.view.paper.view.viewSize.width;
+        var cssH = this.view.paper.view.viewSize.height;
+        // Bypass the zoom setter. It clamps to 0.1 and crops artwork that is larger than the stage.
+        this._zoom = Math.min(cssW / width, cssH / height);
+        this.pan = {
+            x: this.width / 2 - centerX,
+            y: this.height / 2 - centerY,
+        };
+    }
+
+    /**
+     * Crop a canvas to the pixels that were actually painted.
+     * @param {HTMLCanvasElement} canvas
+     * @returns {HTMLCanvasElement}
+     */
+    _trimCanvasToOpaque (canvas) {
+        var context = canvas.getContext('2d');
+        var width = canvas.width;
+        var height = canvas.height;
+        var pixels;
+        try {
+            pixels = context.getImageData(0, 0, width, height).data;
+        } catch (e) {
+            return canvas;
+        }
+
+        var minX = width;
+        var minY = height;
+        var maxX = -1;
+        var maxY = -1;
+
+        for (var y = 0; y < height; y++) {
+            for (var x = 0; x < width; x++) {
+                if (pixels[(y * width + x) * 4 + 3] === 0) continue;
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+        }
+
+        if (maxX < 0) return canvas;
+
+        var cropWidth = maxX - minX + 1;
+        var cropHeight = maxY - minY + 1;
+        var cropped = window.document.createElement('canvas');
+        cropped.width = cropWidth;
+        cropped.height = cropHeight;
+        cropped.getContext('2d').drawImage(canvas, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+        return cropped;
+    }
+
+    /**
+     * Paint the project background behind transparent pixels.
+     * @param {HTMLCanvasElement} canvas
+     * @returns {HTMLCanvasElement}
+     */
+    _fillCanvasBackground (canvas) {
+        var context = canvas.getContext('2d');
+        var color = this.backgroundColor && (this.backgroundColor.rgba || this.backgroundColor.hex);
+        context.globalCompositeOperation = 'destination-over';
+        context.fillStyle = color || '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.globalCompositeOperation = 'source-over';
+        return canvas;
+    }
+
+    /**
      * Create a sequence of images from every frame in the project.
      * @param {object} args - Options for generating the image sequence
      * @param {string} imageType - MIMEtype to use for rendered images. Defaults to 'image/png'.
+     * @param {string} frame - Pass 'current' to render only the current root frame.
+     * @param {boolean} fitToElements - Crop each image to the artwork on that frame.
      * @param {function} onProgress - Function to call for each image loaded, useful for progress bars
      * @param {function} onFinish - Function to call when the images are all loaded.
      */
@@ -1806,7 +1932,8 @@ Wick.Project = class extends Wick.Base {
         
 
         var renderCopy = this;
-        renderCopy.renderBlackBars = true; // Turn off black bars (removes black lines)
+        renderCopy.renderBlackBars = !args.fitToElements;
+        renderCopy.hideStageForExport = !!args.fitToElements;
 
         var oldCanvasContainer = this.view.canvasContainer;
 
@@ -1835,7 +1962,11 @@ Wick.Project = class extends Wick.Base {
 
         // Set the initial state of the project.
         renderCopy.focus = renderCopy.root;
-        renderCopy.focus.timeline.playheadPosition = 1;
+        if (args.frame === 'current') {
+            renderCopy.focus.timeline.playheadPosition = renderCopy.focus.timeline.playheadPosition || 1;
+        } else {
+            renderCopy.focus.timeline.playheadPosition = 1;
+        }
         renderCopy.onionSkinEnabled = false;
         renderCopy.zoom = zoom / window.devicePixelRatio;
         renderCopy.pan = {x: 0, y: 0};
@@ -1846,8 +1977,11 @@ Wick.Project = class extends Wick.Base {
         // (See paper.js docs for info about autoUpdate)
         renderCopy.view.paper.view.autoUpdate = false;
 
+        var framedToArtwork = false;
         var frameImages = [];
-        var numMaxFrameImages = renderCopy.focus.timeline.length;
+        var numMaxFrameImages = args.frame === 'current'
+            ? renderCopy.focus.timeline.playheadPosition
+            : renderCopy.focus.timeline.length;
         var renderFrame = () => {
             var frameImage = new Image();
 
@@ -1864,6 +1998,7 @@ Wick.Project = class extends Wick.Base {
                     this.view.canvasContainer = oldCanvasContainer;
                     this.view.resize();
 
+                    this.hideStageForExport = false;
                     this.history.loadSnapshot('before-gif-render');
                     this.publishedMode = false;
                     this.view.render();
@@ -1881,7 +2016,21 @@ Wick.Project = class extends Wick.Base {
 
             renderCopy.view.render();
             renderCopy.view.paper.view.update();
-            frameImage.src = renderCopy.view.canvas.toDataURL(args.imageType);
+            if (args.fitToElements && !framedToArtwork) {
+                var artworkBounds = renderCopy._contentBounds();
+                if (artworkBounds) {
+                    framedToArtwork = true;
+                    renderCopy._frameCanvasToBounds(artworkBounds);
+                    renderCopy.view.render();
+                    renderCopy.view.paper.view.update();
+                }
+            }
+            var exportCanvas = renderCopy.view.canvas;
+            if (args.fitToElements) {
+                exportCanvas = renderCopy._trimCanvasToOpaque(exportCanvas);
+                exportCanvas = renderCopy._fillCanvasBackground(exportCanvas);
+            }
+            frameImage.src = exportCanvas.toDataURL(args.imageType);
         }
 
         this.resetSoundsPlayed();

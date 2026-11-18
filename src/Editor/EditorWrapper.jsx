@@ -76,6 +76,7 @@ export default function EditorWrapper(props) {
                     exportProjectAsStandaloneZip={props.editor.exportProjectAsStandaloneZip}
                     exportProjectAsStandaloneHTML={props.editor.exportProjectAsStandaloneHTML}
                     exportProjectAsImageSequence={props.editor.exportProjectAsImageSequence}
+                    exportProjectAsContentPNG={props.editor.exportProjectAsContentPNG}
                     exportProjectAsAudioTrack={props.editor.exportProjectAsAudioTrack}
                     warningModalInfo={props.editor.state.warningModalInfo}
                     loadAutosavedProject={props.editor.loadAutosavedProject}

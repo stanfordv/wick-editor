@@ -108,7 +108,8 @@ class ExportOptions extends Component {
     } else if (type === 'IMAGE_SVG') {
       this.props.exportProjectAsImageSVG(name);
       this.props.toggle();
-      
+    } else if (type === 'IMAGE_PNG') {
+      this.props.exportProjectAsContentPNG(args);
     }
   }
 
@@ -419,6 +420,16 @@ class ExportOptions extends Component {
             </div>
           </div>
           {this.renderAdvancedOptions()}
+          <div className="export-fit-png">
+            <div className="export-modal-button-container">
+              <ActionButton
+                color='gray-green'
+                action={() => { this.createAndToggle('IMAGE_PNG') }}
+                text="Export PNG"
+              />
+            </div>
+            <p>Saves the current frame as one PNG, cropped to the artwork instead of the stage.</p>
+          </div>
         </div>
       );
     }
